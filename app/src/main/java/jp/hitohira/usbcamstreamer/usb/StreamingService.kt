@@ -112,17 +112,20 @@ class StreamingService : Service() {
         val streaming = repo.cameras.value.filter { it.streaming }
         // connectedDevice 型はデバイス未接続/権限失効のタイミングで startForeground が
         // 例外を投げうる。投げてもプロセスを巻き込まないよう保護し、失敗時は撤収する。
-        val ok = runCatching {
+        val result = runCatching {
             ServiceCompat.startForeground(
                 this,
                 NOTIF_ID,
                 buildNotification(streaming),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
-        }.isSuccess
-        if (ok) {
+        }
+        if (result.isSuccess) {
             isForeground = true
         } else {
+            // 握りつぶさずログに残す（FGS 起動制限/権限不足の切り分け用）。
+            val t = result.exceptionOrNull()
+            repo.log(LogLevel.ERROR, "startForeground 失敗: ${t?.javaClass?.simpleName}: ${t?.message}")
             repo.stopAllStreaming()
             stopSelf()
         }

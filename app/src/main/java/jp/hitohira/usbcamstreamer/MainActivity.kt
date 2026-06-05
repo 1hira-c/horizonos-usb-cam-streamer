@@ -76,7 +76,8 @@ class MainActivity : ComponentActivity() {
 
   private val connection = object : ServiceConnection {
     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-      binder = service as StreamingService.LocalBinder
+      // in-process の local bind なので通常は必ず LocalBinder だが、安全キャストで堅牢に。
+      binder = service as? StreamingService.LocalBinder
       repo = binder?.getRepo()
     }
 
