@@ -1,7 +1,5 @@
 package jp.hitohira.usbcamstreamer.usb
 
-import java.io.ByteArrayOutputStream
-
 /**
  * 非圧縮（YUYV / Uncompressed）UVC フレームの組み立て。
  *
@@ -13,16 +11,25 @@ import java.io.ByteArrayOutputStream
  * 1 フレームが native の read 上限を超える場合は複数 read にまたがるため、本インスタンスは
  * キャプチャループ開始前に 1 つだけ生成し、`consumeRecords` を跨いで蓄積する想定。
  *
+ * 蓄積先は GC を避けるため固定長 [ByteArray] を 1 本だけ事前確保し、サイズはポインタで管理する。
  * ボトルネック切り分け用に [Stats] を内蔵し、emit/drop の内訳を観測できるようにしている。
  */
 class YuyvFrameAssembler(width: Int, height: Int) {
-    private val expectedBytes: Int = (width * height * 2).coerceAtLeast(1)
-    // 境界検出に失敗して延々と溜め込むのを防ぐ上限。超えたら破棄してリセットする。
-    private val maxAccumulate: Int = expectedBytes + expectedBytes / 2
-
-    private val frame = ByteArrayOutputStream()
+    private val expectedBytes: Int
+    // 境界検出に失敗して延々と溜め込むのを防ぐ上限。超えたら破棄してやり直す。
+    private val maxAccumulate: Int
+    private val buffer: ByteArray
+    private var bufferSize = 0
     private var collecting = false
     private var currentFid: Int? = null
+
+    init {
+        // 壊れた/極端な descriptor で Int オーバーフローしないよう Long で計算し、健全域へクランプする。
+        val bytes = width.toLong() * height.toLong() * 2L
+        expectedBytes = if (bytes in 1L..MAX_FRAME_BYTES) bytes.toInt() else MAX_FRAME_BYTES.toInt()
+        maxAccumulate = expectedBytes + expectedBytes / 2
+        buffer = ByteArray(maxAccumulate)
+    }
 
     /** 観測用カウンタ。CameraSession が定期ログ出力したあと [resetStats] で区間集計する。 */
     class Stats {
@@ -37,13 +44,12 @@ class YuyvFrameAssembler(width: Int, height: Int) {
         var headerErrors = 0     // ヘッダ長が不正なパケット
         var minAssembled = Int.MAX_VALUE
         var maxAssembled = 0
+        var expected = 0
 
         fun line(): String =
             "emit=$emitted short=$shortDropped trunc=$truncated overflow=$overflowReset " +
                 "fidCut=$fidToggles eofCut=$eofEmits empty=$emptyPayloadPackets err=$errPackets hdrErr=$headerErrors " +
                 "asmMin=${if (minAssembled == Int.MAX_VALUE) 0 else minAssembled} asmMax=$maxAssembled exp=$expected"
-
-        var expected = 0
     }
 
     val stats = Stats().also { it.expected = expectedBytes }
@@ -76,12 +82,16 @@ class YuyvFrameAssembler(width: Int, height: Int) {
         val headerLen = records[packetStart].toInt() and 0xFF
         if (headerLen < 2 || headerLen > len) {
             stats.headerErrors++
+            // 不正パケットは現在蓄積中フレームを汚染しうる。途中なら破棄してやり直す。
+            if (collecting) resetFrame()
             return
         }
 
         val flags = records[packetStart + 1].toInt() and 0xFF
         if (flags and UVC_FLAG_ERR != 0) {
             stats.errPackets++
+            // ERR パケットでデータ欠落/破損。途中フレームはズレるので破棄する。
+            if (collecting) resetFrame()
             return
         }
         val fid = flags and UVC_FLAG_FID
@@ -100,13 +110,14 @@ class YuyvFrameAssembler(width: Int, height: Int) {
                 collecting = true
                 currentFid = fid
             }
-            frame.write(records, payloadStart, payloadLen)
-            if (frame.size() > maxAccumulate) {
+            if (bufferSize + payloadLen > maxAccumulate) {
                 // 境界が来ないまま膨らんだ＝FID/EOF 検出が崩れている。破棄してやり直す。
                 stats.overflowReset++
                 resetFrame()
                 return
             }
+            System.arraycopy(records, payloadStart, buffer, bufferSize, payloadLen)
+            bufferSize += payloadLen
         } else {
             stats.emptyPayloadPackets++
             if (!collecting) {
@@ -122,7 +133,7 @@ class YuyvFrameAssembler(width: Int, height: Int) {
     }
 
     private fun emit(out: MutableList<ByteArray>) {
-        val size = frame.size()
+        val size = bufferSize
         if (size < stats.minAssembled) stats.minAssembled = size
         if (size > stats.maxAssembled) stats.maxAssembled = size
 
@@ -130,7 +141,7 @@ class YuyvFrameAssembler(width: Int, height: Int) {
             size < expectedBytes -> stats.shortDropped++          // 取りこぼし → 破棄
             else -> {
                 if (size > expectedBytes) stats.truncated++       // 境界ズレ疑い → 先頭採用
-                out += frame.toByteArray().copyOfRange(0, expectedBytes)
+                out += buffer.copyOfRange(0, expectedBytes)
                 stats.emitted++
             }
         }
@@ -138,7 +149,7 @@ class YuyvFrameAssembler(width: Int, height: Int) {
     }
 
     private fun resetFrame() {
-        frame.reset()
+        bufferSize = 0
         collecting = false
         currentFid = null
     }
@@ -159,5 +170,8 @@ class YuyvFrameAssembler(width: Int, height: Int) {
         private const val UVC_FLAG_FID = 0x01
         private const val UVC_FLAG_EOF = 0x02
         private const val UVC_FLAG_ERR = 0x40
+
+        // 防御的上限（壊れた descriptor 対策）。実フレームは VGA=600KB 程度、4K YUYV でも ~16.6MB。
+        private const val MAX_FRAME_BYTES = 32L * 1024 * 1024
     }
 }

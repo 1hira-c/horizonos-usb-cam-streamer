@@ -124,13 +124,15 @@ class CameraSession(
         val isYuyv = format?.encoding == "YUYV/Uncomp"
         val frameWidth = format?.width ?: 0
         val frameHeight = format?.height ?: 0
-        val frameBytes = frameWidth * frameHeight * 2
+        // Int オーバーフローを避けるためフレームサイズは Long で計算する。
+        val frameBytesLong = frameWidth.toLong() * frameHeight.toLong() * 2L
+        val frameKb = (frameBytesLong / 1024).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
         // YUYV は生データで帯域が大きく CPU も食う。URB を厚めに積んで取りこぼしを減らし、
         // 1 フレームが収まる大きめの read バッファで read 回数を抑える。
         val packetsPerUrb = if (isYuyv) 32 else 8
         val urbCount = if (isYuyv) 12 else 4
         val maxReadBytes = if (isYuyv) {
-            (frameBytes + 256 * 1024).coerceIn(512 * 1024, 4 * 1024 * 1024)
+            (frameBytesLong + 256 * 1024).coerceIn(512L * 1024, 4L * 1024 * 1024).toInt()
         } else {
             512 * 1024
         }
@@ -142,7 +144,7 @@ class CameraSession(
                 LogLevel.INFO,
                 "[$deviceName] YUYV取得→アプリ側JPEGエンコード ${frameWidth}x$frameHeight fourcc=${fourcc.ifBlank { "?" }} " +
                     "q=${YuyvJpegEncoder.DEFAULT_QUALITY} packetsPerUrb=$packetsPerUrb urbCount=$urbCount " +
-                    "readBuf=${maxReadBytes / 1024}KB frame=${frameBytes / 1024}KB",
+                    "readBuf=${maxReadBytes / 1024}KB frame=${frameKb}KB",
             )
             // YuvImage は YUY2(=YUYV) 並びを前提とする。他 FourCC だと整列済みフレームでも色化けする。
             if (fourcc.isNotBlank() && fourcc != "YUY2" && fourcc != "YUYV") {
@@ -205,8 +207,8 @@ class CameraSession(
                     // 経路ごとにフレームを取り出し、配信しつつ「最新の JPEG」と whiteLike を確定する。
                     var latestJpeg: ByteArray? = null
                     var latestWhiteLike = false
-                    if (isYuyv) {
-                        for (raw in yuyvAssembler!!.consumeRecords(records)) {
+                    if (yuyvAssembler != null) {
+                        for (raw in yuyvAssembler.consumeRecords(records)) {
                             val t0 = System.nanoTime()
                             val jpeg = YuyvJpegEncoder.encode(raw, frameWidth, frameHeight)
                             val ms = (System.nanoTime() - t0) / 1_000_000
@@ -224,8 +226,8 @@ class CameraSession(
                             // whiteLike は生 Y から算出（JPEG デコード不要＝低 CPU）。
                             latestWhiteLike = isYuyvWhiteLike(raw, frameWidth, frameHeight)
                         }
-                    } else {
-                        val completeFrames = mjpegAssembler!!.consumeRecords(records).mapNotNull { it.frame }
+                    } else if (mjpegAssembler != null) {
+                        val completeFrames = mjpegAssembler.consumeRecords(records).mapNotNull { it.frame }
                         completeFrames.forEach { server.publishFrame(it) }
                         framesIn += completeFrames.size
                         latestJpeg = completeFrames.lastOrNull()
@@ -269,10 +271,10 @@ class CameraSession(
                 // フレームの有無に関わらず 1 秒ごとに診断ログを出す（停滞時も観測できるように）。
                 if (now - lastStatsAt >= 1000) {
                     val previewStats = previewStatsText(startedAt, now, chunks, bytesIn, framesIn, decoded, displayed, dropped, misses)
-                    val diag = if (isYuyv) {
+                    val diag = if (yuyvAssembler != null) {
                         val encAvg = if (encodeCount > 0) encodeTotalMs.toDouble() / encodeCount else 0.0
                         " | enc avg=%.1fms max=%dms n=%d null=%d jpeg=%dB | asm[%s]".format(
-                            encAvg, encodeMaxMs, encodeCount, encodeNulls, lastJpegBytes, yuyvAssembler!!.stats.line(),
+                            encAvg, encodeMaxMs, encodeCount, encodeNulls, lastJpegBytes, yuyvAssembler.stats.line(),
                         )
                     } else {
                         " | jpeg=%dB analyzeMs=%d".format(lastJpegBytes, analyzeTotalMs)

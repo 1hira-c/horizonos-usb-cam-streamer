@@ -242,11 +242,14 @@ object DescriptorParser {
                     val index = u8(slice, 3)
                     // guidFormat は offset 5 から 16 バイト。先頭 4 バイトが FourCC。
                     val fourcc = readFourcc(slice, 5)
+                    // YuvImage は YUY2(=YUYV) しか正しく扱えない。他形式(UYVY/NV12 等)は別 encoding にして
+                    // 選択肢(computeSelectableFormats の encoding=="YUYV/Uncomp")から自然に除外する。
+                    val encoding = if (fourcc == "YUY2" || fourcc == "YUYV") "YUYV/Uncomp" else "Uncomp/${fourcc.ifBlank { "?" }}"
                     return DecodedCsInterface(
                         "VS Format (Uncompressed)",
-                        "formatIndex=$index frames=${u8(slice, 4)} fourcc=$fourcc",
+                        "formatIndex=$index frames=${u8(slice, 4)} fourcc=$fourcc encoding=$encoding",
                         index,
-                        "YUYV/Uncomp",
+                        encoding,
                         fourcc,
                     )
                 }
@@ -278,7 +281,7 @@ object DescriptorParser {
                         )
                     }
                     val fpsSuffix = if (isUncompressed && emitIntervals.size > 1) " (${emitIntervals.size}fps候補)" else ""
-                    formats += "$kind$fourccSuffix ${w}x$h$fpsSuffix"
+                    formats += "$encoding$fourccSuffix ${w}x$h$fpsSuffix"
                     return DecodedCsInterface(
                         "VS Frame ($kind)",
                         "frameIndex=$frameIndex ${w}x$h intervals=${emitIntervals.size} default=${defaultInterval}x100ns maxFrame=$maxFrameSize",

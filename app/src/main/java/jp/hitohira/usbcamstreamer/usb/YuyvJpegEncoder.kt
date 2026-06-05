@@ -21,9 +21,13 @@ object YuyvJpegEncoder {
      */
     fun encode(yuy2: ByteArray, width: Int, height: Int, quality: Int = DEFAULT_QUALITY): ByteArray? {
         if (width <= 0 || height <= 0) return null
-        if (yuy2.size < width * height * 2) return null
+        // Int オーバーフローを避けるため期待サイズは Long で計算してから検証する。
+        val expected = width.toLong() * height.toLong() * 2L
+        if (expected <= 0L || expected > Int.MAX_VALUE.toLong() || yuy2.size.toLong() < expected) return null
         val image = YuvImage(yuy2, ImageFormat.YUY2, width, height, null)
-        val baos = ByteArrayOutputStream()
+        // 圧縮後サイズの目安(YUY2 の約 1/8)で初期確保し、再確保コピーを抑える。
+        val initialCapacity = (width * height / 4).coerceIn(1024, 4 * 1024 * 1024)
+        val baos = ByteArrayOutputStream(initialCapacity)
         val ok = image.compressToJpeg(Rect(0, 0, width, height), quality.coerceIn(1, 100), baos)
         return if (ok) baos.toByteArray() else null
     }
