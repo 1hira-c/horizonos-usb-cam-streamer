@@ -29,7 +29,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 状態は [StateFlow] で公開し、Compose 側が observe して描く。
  *
  * 使い方:
- *  - Activity の onCreate で [register]、onDestroy で [unregister]。
+ *  - 所有者は [StreamingService]（フォアグラウンドサービス）。サービスの onCreate で [register]、
+ *    onDestroy で [unregister] する。Activity はサービスに bind して本インスタンスを操作するだけ。
  *  - [refresh] で一覧更新、[requestConnect] で権限要求→open（複数台を順次接続できる）。
  */
 class UsbRepository(context: Context) {
@@ -241,12 +242,17 @@ class UsbRepository(context: Context) {
     }
 
     // --- カメラ別アクション -------------------------------------------------
-    fun startStreaming(deviceName: String) {
-        sessions[deviceName]?.startStreaming()
-    }
+    /** 指定カメラの配信を開始。実際に開始できたら true（前面化の判断に使う）。 */
+    fun startStreaming(deviceName: String): Boolean =
+        sessions[deviceName]?.startStreaming() ?: false
 
     fun stopStreaming(deviceName: String) {
         sessions[deviceName]?.stopStreaming()
+    }
+
+    /** 全カメラの配信を停止（open/セッションは維持）。フォアグラウンドサービスの一括停止用。 */
+    fun stopAllStreaming() {
+        sessions.values.forEach { it.stopStreaming() }
     }
 
     fun setFormat(deviceName: String, index: Int) {

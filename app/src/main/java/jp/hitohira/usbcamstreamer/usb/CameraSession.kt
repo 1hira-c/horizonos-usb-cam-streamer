@@ -57,24 +57,26 @@ class CameraSession(
     fun snapshot(): CameraUiState = _ui.value
 
     // --- 操作 --------------------------------------------------------------
-    fun startStreaming() {
+    /** 配信を開始し、実際に開始できたら true を返す（前面化の判断に使う）。 */
+    fun startStreaming(): Boolean {
         if (previewJob?.isActive == true) {
             log(LogLevel.WARN, "[$deviceName] 既に配信中です")
-            return
+            return true
         }
         val candidate = findBestIsoInEndpoint()
         if (candidate == null) {
             update { it.copy(error = "iso IN endpoint が見つかりません") }
-            return
+            return false
         }
         val url = runCatching { server.start() }.getOrElse { t ->
             update { it.copy(error = "配信開始失敗: ${t.javaClass.simpleName}: ${t.message}") }
-            return
+            return false
         }
         update {
             it.copy(streaming = true, streamUrl = url, streamStats = server.statusLine(), error = null)
         }
         previewJob = scope.launch { captureLoop(candidate) }
+        return true
     }
 
     fun stopStreaming() {
