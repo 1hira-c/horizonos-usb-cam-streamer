@@ -41,6 +41,7 @@ $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 | `usb/UvcPayloadParser.kt` | iso パケット列 → MJPEG フレーム組み立て |
 | `usb/DescriptorParser.kt` | USB ディスクリプタ解析とフォーマット抽出 |
 | `usb/MjpegStreamServer.kt` | HTTP/MJPEG 配信サーバ（カメラごとに1インスタンス） |
+| `usb/StreamingService.kt` | `UsbRepository` を所有するフォアグラウンドサービス（`connectedDevice`）。配信を Activity の寿命から切り離し、別アプリ使用中も継続させる。Activity は bind して repo を取得 |
 | `usb/CpuMonitor.kt` | `/proc/self/stat` による自プロセス CPU% 算出 |
 | `usb/CameraModels.kt` | UI/状態のデータクラス（`CameraUiState`, `FormatOption`, `CpuStats`, `IsoInCandidate`） |
 | `usb/UsbModels.kt` | USB デバイスのモデル（`DeviceSummary` など） |
@@ -55,6 +56,7 @@ $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 4. native（`uvcnative`）が **fd ごとに独立した iso ストリーム**を開始し、URB を reap → MJPEG フレームを組み立て。
 5. 各カメラの `MjpegStreamServer` が PC へ multipart MJPEG を配信（`/mjpeg`、加えて `/snapshot.jpg`・`/status`）。
 6. 本体プレビューはカメラごとにトグル（OFF でも配信は継続）。CPU% を表示。
+7. 配信開始で `StreamingService` を前面化（`MainActivity` が `startForegroundService` →`ACTION_ENSURE_FOREGROUND`）。Activity が背面/破棄されても配信継続。全配信停止／通知の「停止」／タスク削除で前面化解除＋`stopSelf`。
 
 ## ⚠️ 注意点 / 同期が必要なもの
 
