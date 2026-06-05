@@ -1,0 +1,21 @@
+# horizonos-usb-cam-streamer — Cursor ルール
+
+**Meta Horizon OS（Quest）** 向けの単機能アプリ。**UVC カメラ**に USB Host API ＋ **自前の
+usbdevfs ioctl レイヤ（JNI）** 経由でアクセスし、**MJPEG を HTTP で PC へストリーミング**する。
+最大3台、カメラごとの解像度選択、CPU% 表示。
+
+**アーキテクチャ・ビルドコマンド・実行フロー・注意点の詳細は `AGENTS.md` を参照。**
+編集時に守るべき要点:
+
+- 唯一動作する UVC 経路は `fd + 自前 usbdevfs ioctl + horizonos.permission.USB_CAMERA`。
+  Camera2 / Camera1 / V4L2 / 純 Java USB は不可。`android.permission.CAMERA` は不要。
+- Kotlin: `app/src/main/java/jp/hitohira/usbcamstreamer/`。native: `app/src/main/cpp/`。
+- **`cpp/native-lib.cpp` の JNI シンボルは package ＋ `UvcNative` クラスに連動**
+  （`Java_jp_hitohira_usbcamstreamer_usb_UvcNative_*`）。package/クラスを改名したら6つの
+  シンボルを再生成（エスケープ: `.`→`_`、`_`→`_1`）。不一致＝`UnsatisfiedLinkError`。
+- native lib 名 `uvcnative` を `System.loadLibrary` と `CMakeLists.txt` で一致させる。
+- 多台配信のボトルネックは共有 USB バス帯域。プレビューの JPEG デコードが最も CPU を食う。
+- ビルド: `JAVA_HOME` を Android Studio の jbr に → `.\gradlew.bat installDebug`。
+  ログ: `adb logcat -s UsbDiag UsbDiagNative`。
+- 開発者/研究向けツール — **ストア配布不可**（`USB_CAMERA` はサイドロード限定）。
+- ライセンス: MIT（`LICENSE`）。テンプレ由来の帰属・商標表記は `NOTICE` に記載。

@@ -1,0 +1,20 @@
+horizonos-usb-cam-streamer
+Copyright (c) 2026 1hira
+
+本プロジェクトは Meta の「Horizon OS Template」スタータープロジェクト（MIT License で配布）を
+起点に作成されています:
+
+    Copyright (c) Meta Platforms, Inc. and affiliates.
+
+本リポジトリのアプリケーションロジック（usbfs/usbdevfs ioctl を JNI 経由で扱う UVC デバイス
+アクセス、UVC コントロールのネゴシエーション、MJPEG ペイロードの組み立て、HTTP/MJPEG 配信
+サーバ）は、上記著作権者によるオリジナルの実装です。プロジェクトの足場（Gradle 構成、単一
+Activity の Compose エントリポイント、Horizon OS マニフェストのレイアウト）の一部はテンプレート
+由来であり、この NOTICE はそのテンプレートに対する MIT License の帰属表示義務を満たすために
+保持しています。
+
+商標
+----
+Meta、Quest、Horizon OS（Meta Horizon OS）は Meta Platforms, Inc. の商標です。本プロジェクトは
+Meta Platforms, Inc. とは無関係であり、同社による公認・後援を受けていません。リポジトリ名および
+ドキュメント中のこれらの名称は、対応プラットフォームを示すための記述的な使用です。

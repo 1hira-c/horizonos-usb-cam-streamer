@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Copyright (c) 2026 1hira
+     This source code is licensed under the MIT license found in the
+     LICENSE file in the root directory of this source tree. -->
+<manifest
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:horizonos="http://schemas.horizonos/sdk"
+  android:versionCode="1"
+  android:versionName="1.0"
+  android:installLocation="auto"
+>
+
+  <horizonos:uses-horizonos-sdk
+    horizonos:minSdkVersion="69"
+    horizonos:targetSdkVersion="69"
+  />
+  <uses-feature android:name="android.hardware.usb.host" android:required="true" />
+  <!-- UVC アクセスの唯一のゲート。CAMERA 権限は生 USB 経路には不要。 -->
+  <uses-permission android:name="horizonos.permission.USB_CAMERA" />
+  <!-- MjpegStreamServer による PC への HTTP/MJPEG 配信用。 -->
+  <uses-permission android:name="android.permission.INTERNET" />
+  <application
+    android:allowBackup="false"
+    android:label="@string/app_name"
+    android:theme="@style/Theme.AppTheme"
+  >
+    <meta-data
+      android:name="com.oculus.supportedDevices"
+      android:value="quest2|questpro|quest3"
+    />
+    <activity
+      android:name="jp.hitohira.usbcamstreamer.MainActivity"
+      android:launchMode="singleTask"
+      android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode"
+      android:exported="true"
+    >
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+      </intent-filter>
+      <meta-data
+        android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+        android:resource="@xml/device_filter" />
+      <layout
+        android:defaultHeight="640dp"
+        android:defaultWidth="1024dp" />
+    </activity>
+  </application>
+</manifest>

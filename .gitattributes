@@ -1,0 +1,14 @@
+# Enforce LF line endings for all text files on every platform.
+# Overrides core.autocrlf so Windows checkouts never introduce CRLF.
+* text=auto eol=lf
+
+# Binary files: never apply line-ending or text conversion.
+*.jar    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.ico    binary
+*.keystore binary
+*.jks    binary
+*.so     binary

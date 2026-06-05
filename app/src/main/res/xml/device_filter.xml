@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      UVC カメラはクラス 0x0E (Video) を持つ。
+      実験用途なので Video クラスのインターフェースを持つデバイスを広く拾う。
+      ベンダー/プロダクトを固定したい場合は <usb-device vendor-id=".." product-id=".." /> を使う。
+    -->
+    <usb-device class="239" subclass="2" />  <!-- Miscellaneous / IAD (UVC は通常こちら) -->
+    <usb-device class="14" />                <!-- Video class (単一インターフェースのデバイス向け) -->
+</resources>
