@@ -69,6 +69,8 @@ object DescriptorParser {
         val height: Int,
         val defaultFrameInterval100ns: Int,
         val maxFrameSize: Int,
+        /** 非圧縮フォーマットの GUID 先頭 FourCC（例 "YUY2"/"UYVY"/"NV12"）。MJPEG は ""。 */
+        val fourcc: String = "",
     )
 
     fun parse(raw: ByteArray): Result {
@@ -84,6 +86,7 @@ object DescriptorParser {
         var curIfaceSubclass = -1
         var curVideoFormatIndex = 0
         var curVideoFormatEncoding = ""
+        var curVideoFormatFourcc = ""
         var depthForChildren = 1
 
         while (i + 2 <= raw.size) {
@@ -123,6 +126,7 @@ object DescriptorParser {
                     curIfaceSubclass = u8(slice, 6)
                     curVideoFormatIndex = 0
                     curVideoFormatEncoding = ""
+                    curVideoFormatFourcc = ""
                     val ifNum = u8(slice, 2)
                     val alt = u8(slice, 3)
                     val nEp = u8(slice, 4)
@@ -164,10 +168,12 @@ object DescriptorParser {
                         formats = formats,
                         curVideoFormatIndex = curVideoFormatIndex,
                         curVideoFormatEncoding = curVideoFormatEncoding,
+                        curVideoFormatFourcc = curVideoFormatFourcc,
                         videoFormats = videoFormats,
                     )
                     curVideoFormatIndex = decoded.videoFormatIndex
                     curVideoFormatEncoding = decoded.videoFormatEncoding
+                    curVideoFormatFourcc = decoded.videoFormatFourcc
                     val (title, detail) = decoded.title to decoded.detail
                     nodes += Node(depthForChildren, title, detail, slice)
                 }
@@ -194,6 +200,7 @@ object DescriptorParser {
         val detail: String,
         val videoFormatIndex: Int,
         val videoFormatEncoding: String,
+        val videoFormatFourcc: String,
     )
 
     private fun decodeCsInterface(
@@ -204,10 +211,11 @@ object DescriptorParser {
         formats: MutableList<String>,
         curVideoFormatIndex: Int,
         curVideoFormatEncoding: String,
+        curVideoFormatFourcc: String,
         videoFormats: MutableList<VideoFormat>,
     ): DecodedCsInterface {
         if (curIfaceClass != CLASS_VIDEO) {
-            return DecodedCsInterface("CS Interface", "subtype=$subtype len=${slice.size}", curVideoFormatIndex, curVideoFormatEncoding)
+            return DecodedCsInterface("CS Interface", "subtype=$subtype len=${slice.size}", curVideoFormatIndex, curVideoFormatEncoding, curVideoFormatFourcc)
         }
         // VideoStreaming のフォーマット/フレームを読み取り、formats に積む。
         if (curIfaceSubclass == SC_VIDEO_STREAMING) {
@@ -218,6 +226,7 @@ object DescriptorParser {
                         "formats=${u8(slice, 3)} endpoint=0x%02x".format(u8(slice, 6)),
                         curVideoFormatIndex,
                         curVideoFormatEncoding,
+                        curVideoFormatFourcc,
                     )
                 VS_FORMAT_MJPEG -> {
                     val index = u8(slice, 3)
@@ -226,41 +235,59 @@ object DescriptorParser {
                         "formatIndex=$index frames=${u8(slice, 4)}",
                         index,
                         "MJPEG",
+                        "",
                     )
                 }
                 VS_FORMAT_UNCOMPRESSED -> {
                     val index = u8(slice, 3)
+                    // guidFormat は offset 5 から 16 バイト。先頭 4 バイトが FourCC。
+                    val fourcc = readFourcc(slice, 5)
+                    // YuvImage は YUY2(=YUYV) しか正しく扱えない。他形式(UYVY/NV12 等)は別 encoding にして
+                    // 選択肢(computeSelectableFormats の encoding=="YUYV/Uncomp")から自然に除外する。
+                    val encoding = if (fourcc == "YUY2" || fourcc == "YUYV") "YUYV/Uncomp" else "Uncomp/${fourcc.ifBlank { "?" }}"
                     return DecodedCsInterface(
                         "VS Format (Uncompressed)",
-                        "formatIndex=$index frames=${u8(slice, 4)}",
+                        "formatIndex=$index frames=${u8(slice, 4)} fourcc=$fourcc encoding=$encoding",
                         index,
-                        "YUYV/Uncomp",
+                        encoding,
+                        fourcc,
                     )
                 }
                 VS_FRAME_MJPEG, VS_FRAME_UNCOMPRESSED -> {
+                    val isUncompressed = subtype == VS_FRAME_UNCOMPRESSED
                     val w = u16(slice, 5)
                     val h = u16(slice, 7)
-                    val kind = if (subtype == VS_FRAME_MJPEG) "MJPEG" else "YUYV/Uncomp"
+                    val kind = if (isUncompressed) "YUYV/Uncomp" else "MJPEG"
                     val encoding = curVideoFormatEncoding.ifBlank { kind }
                     val formatIndex = curVideoFormatIndex.coerceAtLeast(1)
                     val frameIndex = u8(slice, 3)
                     val defaultInterval = u32(slice, 21)
                     val maxFrameSize = u32(slice, 17)
-                    formats += "$kind ${w}x$h"
-                    videoFormats += VideoFormat(
-                        encoding = encoding,
-                        formatIndex = formatIndex,
-                        frameIndex = frameIndex,
-                        width = w,
-                        height = h,
-                        defaultFrameInterval100ns = defaultInterval,
-                        maxFrameSize = maxFrameSize,
-                    )
+                    val fourccSuffix = if (curVideoFormatFourcc.isNotBlank()) " ${curVideoFormatFourcc}" else ""
+                    val intervals = parseFrameIntervals(slice, defaultInterval)
+                    // YUYV は帯域に応じて fps を選べるよう全インターバルを候補化。MJPEG は従来どおり既定のみ。
+                    val emitIntervals = (if (isUncompressed) intervals else listOf(defaultInterval.takeIf { it > 0 } ?: 333333))
+                        .distinct()
+                    for (iv in emitIntervals) {
+                        videoFormats += VideoFormat(
+                            encoding = encoding,
+                            formatIndex = formatIndex,
+                            frameIndex = frameIndex,
+                            width = w,
+                            height = h,
+                            defaultFrameInterval100ns = iv,
+                            maxFrameSize = maxFrameSize,
+                            fourcc = curVideoFormatFourcc,
+                        )
+                    }
+                    val fpsSuffix = if (isUncompressed && emitIntervals.size > 1) " (${emitIntervals.size}fps候補)" else ""
+                    formats += "$encoding$fourccSuffix ${w}x$h$fpsSuffix"
                     return DecodedCsInterface(
                         "VS Frame ($kind)",
-                        "frameIndex=$frameIndex ${w}x$h interval=${defaultInterval}x100ns maxFrame=$maxFrameSize",
+                        "frameIndex=$frameIndex ${w}x$h intervals=${emitIntervals.size} default=${defaultInterval}x100ns maxFrame=$maxFrameSize",
                         curVideoFormatIndex,
                         curVideoFormatEncoding,
+                        curVideoFormatFourcc,
                     )
                 }
             }
@@ -270,7 +297,43 @@ object DescriptorParser {
             "subclass=$curIfaceSubclass subtype=$subtype len=${slice.size}",
             curVideoFormatIndex,
             curVideoFormatEncoding,
+            curVideoFormatFourcc,
         )
+    }
+
+    /**
+     * VS_FRAME ディスクリプタの利用可能フレームインターバル(100ns 単位)を返す。
+     * bFrameIntervalType==0 は連続(min/max/step)、>0 は離散リスト。
+     * UVC 1.x の VS_FRAME レイアウト: bFrameIntervalType=offset25, インターバル列=offset26 から 4B ずつ。
+     */
+    private fun parseFrameIntervals(slice: ByteArray, defaultInterval: Int): List<Int> {
+        val intervalType = u8(slice, 25)
+        val result = mutableListOf<Int>()
+        if (intervalType == 0) {
+            // 連続: 代表値として min / default / max を採用（細かいステップ全列挙は避ける）。
+            val minI = u32(slice, 26)
+            val maxI = u32(slice, 30)
+            listOf(minI, defaultInterval, maxI).forEach { if (it > 0) result += it }
+        } else {
+            for (n in 0 until intervalType) {
+                val iv = u32(slice, 26 + n * 4)
+                if (iv > 0) result += iv
+            }
+        }
+        if (result.isEmpty()) result += (defaultInterval.takeIf { it > 0 } ?: 333333)
+        // 小さいインターバル=高fps を先頭に（既定の並びに近づける）。
+        return result.distinct().sorted()
+    }
+
+    /** ASCII 印字可能な 4 バイトを FourCC 文字列にする（不可視は '?'）。末尾空白は除去。 */
+    private fun readFourcc(b: ByteArray, off: Int): String {
+        if (off + 4 > b.size) return ""
+        val sb = StringBuilder(4)
+        for (i in 0 until 4) {
+            val c = b[off + i].toInt() and 0xFF
+            sb.append(if (c in 32..126) c.toChar() else '?')
+        }
+        return sb.toString().trim()
     }
 
     private fun classLabel(cls: Int, sub: Int): String = when (cls) {
