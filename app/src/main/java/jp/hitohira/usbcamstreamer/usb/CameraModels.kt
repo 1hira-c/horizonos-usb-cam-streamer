@@ -13,7 +13,6 @@ data class CameraUiState(
     val streamUrl: String = "",
     val streamStats: String = "",
     val previewStats: String = "",
-    val whiteLike: Boolean = false,
     val previewJpeg: ByteArray? = null,
     val previewVersion: Long = 0,
     val error: String? = null,
