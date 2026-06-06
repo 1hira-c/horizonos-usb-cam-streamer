@@ -1,5 +1,6 @@
 package jp.hitohira.usbcamstreamer.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -9,9 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.Button
@@ -20,13 +19,13 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchColors
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -35,10 +34,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jp.hitohira.usbcamstreamer.usb.CameraUiState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 配信中=緑 / 停止=グレー。各所のステータス色で共通利用する。 */
 val StreamingColor = Color(0xFF4CAF50)
@@ -149,17 +149,21 @@ fun CameraPreviewImage(
     show: Boolean = true,
 ) {
     val previewBytes = state.previewJpeg
-    val bitmap = remember(previewBytes, state.previewVersion, show) {
-        if (show && previewBytes != null) {
-            BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size)
+    // 毎フレーム(~30fps)の JPEG デコードを UI スレッドで行うとカクつくため、IO にオフロードする。
+    val bitmap by produceState<Bitmap?>(null, previewBytes, state.previewVersion, show) {
+        value = if (show && previewBytes != null) {
+            withContext(Dispatchers.IO) {
+                BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size)
+            }
         } else {
             null
         }
     }
+    val current = bitmap
     Box(modifier.background(Color(0xFF1A1A1A)), contentAlignment = Alignment.Center) {
-        if (bitmap != null) {
+        if (current != null) {
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = current.asImageBitmap(),
                 contentDescription = "UVC live preview",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit,

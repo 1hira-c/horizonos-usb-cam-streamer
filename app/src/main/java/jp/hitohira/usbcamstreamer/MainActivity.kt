@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -119,6 +120,9 @@ class MainActivity : ComponentActivity() {
           this,
           Intent(this, StreamingService::class.java).setAction(StreamingService.ACTION_ENSURE_FOREGROUND),
       )
+    }.onFailure { e ->
+      // 配信自体は継続させつつ、前面化に失敗した原因を追えるようログに残す。
+      Log.w("MainActivity", "Failed to start foreground service", e)
     }
   }
 }
