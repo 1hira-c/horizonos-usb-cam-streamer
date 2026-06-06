@@ -11,60 +11,42 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import android.content.pm.PackageManager
-import com.meta.spatial.uiset.card.SecondaryCard
+import androidx.core.content.ContextCompat
 import com.meta.spatial.uiset.theme.LocalColorScheme
 import com.meta.spatial.uiset.theme.SpatialTheme
+import jp.hitohira.usbcamstreamer.ui.CamerasTab
+import jp.hitohira.usbcamstreamer.ui.DashboardScaffold
+import jp.hitohira.usbcamstreamer.ui.DashboardTab
+import jp.hitohira.usbcamstreamer.ui.PreviewTab
+import jp.hitohira.usbcamstreamer.ui.SystemTab
 import jp.hitohira.usbcamstreamer.usb.StreamingService
 import jp.hitohira.usbcamstreamer.usb.UsbRepository
-import jp.hitohira.usbcamstreamer.ui.CameraPanel
-import jp.hitohira.usbcamstreamer.ui.DeviceListScreen
 
 /**
  * 単一画面の Activity。配信状態を保持するのは [StreamingService] 側で、本 Activity は
  * サービスに bind して [UsbRepository] を取得し、UI 描画と操作を行うだけ（配信は Activity の
- * 寿命に依存しない）。
+ * 寿命に依存しない）。UI は Header + 3 タブ(Cameras / Preview / System) + Footer のダッシュボード。
  */
 class MainActivity : ComponentActivity() {
 
@@ -103,7 +85,6 @@ class MainActivity : ComponentActivity() {
             CameraStreamApp(
                 repo = current,
                 onStartStream = { startStreaming(current, it) },
-                onStopAll = { binder?.stopAll() },
             )
           }
         }
@@ -131,10 +112,14 @@ class MainActivity : ComponentActivity() {
   /** 配信を開始し、実際に開始できたときだけサービスを前面化する（失敗時は前面化しない）。 */
   private fun startStreaming(repo: UsbRepository, deviceName: String) {
     if (!repo.startStreaming(deviceName)) return
-    ContextCompat.startForegroundService(
-        this,
-        Intent(this, StreamingService::class.java).setAction(StreamingService.ACTION_ENSURE_FOREGROUND),
-    )
+    // 権限ダイアログ直後など非フォアグラウンドな瞬間に呼ばれると
+    // ForegroundServiceStartNotAllowedException で落ちうるため握りつぶす（配信自体は継続）。
+    runCatching {
+      ContextCompat.startForegroundService(
+          this,
+          Intent(this, StreamingService::class.java).setAction(StreamingService.ACTION_ENSURE_FOREGROUND),
+      )
+    }
   }
 }
 
@@ -150,147 +135,79 @@ private fun ConnectingScreen() {
 }
 
 /**
- * マルチカメラ UVC→PC ストリーミングの単一画面。
- * 上部にデバイス一覧（複数接続可）、下部に接続済みカメラのパネルを横並び（最大3台で横スクロール）。
+ * マルチカメラ UVC→PC ストリーミングのダッシュボード。Cameras タブで接続＋配信トグル、
+ * Preview タブでライブ表示＋一括配信、System タブで権限・CPU・ログを表示する。
  */
 @Composable
 fun CameraStreamApp(
     repo: UsbRepository,
     onStartStream: (String) -> Unit,
-    onStopAll: () -> Unit,
 ) {
   val devices by repo.devices.collectAsStateWithLifecycle()
   val cameras by repo.cameras.collectAsStateWithLifecycle()
   val cpu by repo.cpu.collectAsStateWithLifecycle()
-  val lastError by repo.lastError.collectAsStateWithLifecycle()
-  val connectedNames = remember(cameras) { cameras.map { it.deviceName }.toSet() }
+  val logs by repo.logs.collectAsStateWithLifecycle()
   val anyStreaming = remember(cameras) { cameras.any { it.streaming } }
 
-  Column(
-      modifier =
-          Modifier.fillMaxSize()
-              .clip(SpatialTheme.shapes.large)
-              .background(brush = LocalColorScheme.current.panel)
-              .padding(24.dp),
-  ) {
-    Text(
-        text = "UVC → PC マルチストリーミング",
-        style = SpatialTheme.typography.headline1,
-        fontWeight = FontWeight.Bold,
-    )
-    Text(
-        text = "Horizon OS / USB(usbfs) 経由・最大3カメラ同時配信（開発者向けツール）",
-        style = SpatialTheme.typography.body1,
-        color = LocalColorScheme.current.secondaryAlphaBackground,
-    )
+  var selectedTab by remember { mutableStateOf(DashboardTab.Cameras) }
 
-    Spacer(modifier = Modifier.height(8.dp))
-    CameraPermissionRow()
-    Spacer(modifier = Modifier.height(6.dp))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Text(
-          text = "CPU: %.0f%% (1コア基準) / %dコア".format(cpu.processPercent, cpu.cores),
-          style = SpatialTheme.typography.body1,
-          fontFamily = FontFamily.Monospace,
-      )
-      if (anyStreaming) {
-        OutlinedButton(onClick = onStopAll) {
-          Text("全停止")
+  // トグル ON されたが未接続のデバイス名。接続完了後に自動で配信を開始するための保留集合。
+  val pendingStart = remember { mutableStateMapOf<String, Boolean>() }
+
+  // 接続が成立した保留デバイスは、ここで一度だけ配信開始を発火し保留から外す。
+  LaunchedEffect(cameras) {
+    pendingStart.keys.toList().forEach { name ->
+      if (cameras.any { it.deviceName == name }) {
+        onStartStream(name)
+        pendingStart.remove(name)
+      }
+    }
+  }
+
+  // Cameras タブのトグル: ON=接続＋配信開始 / OFF=配信停止＋切断。
+  val onToggleDevice: (String, Boolean) -> Unit = { deviceName, on ->
+    val cam = cameras.find { it.deviceName == deviceName }
+    if (on) {
+      when {
+        cam == null -> {
+          // 未接続: 接続要求（権限要求含む）→ 接続成立後に LaunchedEffect が配信開始。
+          repo.requestConnect(deviceName)
+          pendingStart[deviceName] = true
         }
+        !cam.streaming -> onStartStream(deviceName)
       }
-    }
-    Spacer(modifier = Modifier.height(8.dp))
-
-    // デバイス一覧（接続用・コンパクト）。
-    Box(modifier = Modifier.height(190.dp).fillMaxWidth()) {
-      SecondaryCard(modifier = Modifier.fillMaxSize()) {
-        DeviceListScreen(
-            devices = devices,
-            connectedNames = connectedNames,
-            onRefresh = { repo.refresh() },
-            onConnect = { repo.requestConnect(it) },
-        )
-      }
-    }
-    lastError?.let {
-      Text(it, modifier = Modifier.padding(top = 6.dp), color = Color.Red)
-    }
-    Spacer(modifier = Modifier.height(8.dp))
-
-    // 接続済みカメラのパネル（横並び、3台時は横スクロール）。
-    if (cameras.isEmpty()) {
-      Text(
-          "カメラ未接続。上の一覧から UVC デバイスを接続してください。",
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.secondaryAlphaBackground,
-      )
     } else {
-      LazyRow(
-          modifier = Modifier.weight(1f).fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        items(cameras, key = { it.deviceName }) { cam ->
-          CameraPanel(
-              state = cam,
-              onSelectFormat = { repo.setFormat(cam.deviceName, it) },
-              onStartStream = { onStartStream(cam.deviceName) },
-              onStopStream = { repo.stopStreaming(cam.deviceName) },
-              onDisconnect = { repo.disconnect(cam.deviceName) },
-              modifier = Modifier.fillParentMaxWidth(0.5f).fillMaxHeight(),
-          )
-        }
-      }
+      pendingStart.remove(deviceName)
+      repo.stopStreaming(deviceName)
+      repo.disconnect(deviceName)
     }
   }
-}
 
-/** USB_CAMERA 権限の状態表示＋要求。Horizon OS では UVC アクセスはこの権限のみがゲート。 */
-@Composable
-private fun CameraPermissionRow() {
-  val context = LocalContext.current
-  val usbCamera = "horizonos.permission.USB_CAMERA"
-
-  fun granted(p: String) =
-      ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
-
-  var status by remember { mutableStateOf("") }
-  fun refresh() {
-    status = "USB_CAMERA=${if (granted(usbCamera)) "許可" else "未許可/未知"}"
-  }
-
-  // USB_CAMERA に加え、Android 13+ では常駐通知のため POST_NOTIFICATIONS も要求する。
-  val requested = remember {
-    buildList {
-      add(usbCamera)
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        add("android.permission.POST_NOTIFICATIONS")
-      }
-    }.toTypedArray()
-  }
-
-  val launcher = rememberLauncherForActivityResult(
-      ActivityResultContracts.RequestMultiplePermissions(),
-  ) { refresh() }
-
-  LaunchedEffect(Unit) {
-    refresh()
-    launcher.launch(requested)
-  }
-
-  SecondaryCard(modifier = Modifier.fillMaxWidth()) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Text("権限状態: $status", style = SpatialTheme.typography.body1)
-      OutlinedButton(onClick = { launcher.launch(requested) }) {
-        Text("権限要求")
-      }
+  DashboardScaffold(
+      selectedTab = selectedTab,
+      onSelectTab = { selectedTab = it },
+      note = "Horizon OS / USB(usbfs) 経由・最大3カメラ同時配信（開発者向けツール）",
+      serviceRunning = anyStreaming,
+  ) { tab ->
+    when (tab) {
+      DashboardTab.Cameras ->
+          CamerasTab(
+              devices = devices,
+              cameras = cameras,
+              pendingNames = pendingStart.keys,
+              onRefresh = { repo.refresh() },
+              onToggleDevice = onToggleDevice,
+              onSelectFormat = { name, idx -> repo.setFormat(name, idx) },
+          )
+      DashboardTab.Preview ->
+          PreviewTab(
+              cameras = cameras,
+              onStartStream = onStartStream,
+              onStopStream = { repo.stopStreaming(it) },
+              onDisconnect = { repo.disconnect(it) },
+          )
+      DashboardTab.System ->
+          SystemTab(cpu = cpu, logs = logs)
     }
   }
 }

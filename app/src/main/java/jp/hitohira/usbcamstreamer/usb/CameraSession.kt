@@ -1,6 +1,5 @@
 package jp.hitohira.usbcamstreamer.usb
 
-import android.graphics.BitmapFactory
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -118,7 +117,8 @@ class CameraSession(
         UvcControlNegotiator.run(device, connection, descriptors, log, selectedVideoFormat())
         val packetSize = candidate.packetSize.coerceIn(1, 3072)
         val readTimeoutMs = 40
-        val minUiIntervalMs = 66L
+        // プレビュー更新間隔。白飛び判定(重いJPEGデコード)を廃したので 33ms(≒30fps)まで詰められる。
+        val minUiIntervalMs = 33L
         // 選択フォーマットで取得経路を分岐: MJPEG はそのまま、YUYV(非圧縮) はアプリ側で JPEG 化する。
         val format = selectedVideoFormat()
         val isYuyv = format?.encoding == "YUYV/Uncomp"
@@ -166,7 +166,6 @@ class CameraSession(
         var encodeTotalMs = 0L
         var encodeMaxMs = 0L
         var encodeNulls = 0
-        var analyzeTotalMs = 0L
         var lastJpegBytes = 0
         val startedAt = System.currentTimeMillis()
         var lastUiAt = 0L
@@ -204,9 +203,8 @@ class CameraSession(
                 } else {
                     chunks++
                     bytesIn += records.size
-                    // 経路ごとにフレームを取り出し、配信しつつ「最新の JPEG」と whiteLike を確定する。
+                    // 経路ごとにフレームを取り出し、配信しつつ「最新の JPEG」を確定する。
                     var latestJpeg: ByteArray? = null
-                    var latestWhiteLike = false
                     if (yuyvAssembler != null) {
                         for (raw in yuyvAssembler.consumeRecords(records)) {
                             val t0 = System.nanoTime()
@@ -223,8 +221,6 @@ class CameraSession(
                             framesIn++
                             latestJpeg = jpeg
                             lastJpegBytes = jpeg.size
-                            // whiteLike は生 Y から算出（JPEG デコード不要＝低 CPU）。
-                            latestWhiteLike = isYuyvWhiteLike(raw, frameWidth, frameHeight)
                         }
                     } else if (mjpegAssembler != null) {
                         val completeFrames = mjpegAssembler.consumeRecords(records).mapNotNull { it.frame }
@@ -241,22 +237,12 @@ class CameraSession(
                         if (now - lastUiAt >= minUiIntervalMs) {
                             lastUiAt = now
                             displayed++
-                            // プレビュー更新は解析の成否に依存させない（解析が失敗しても映像は出す）。
-                            val whiteLike = if (isYuyv) {
-                                latestWhiteLike
-                            } else {
-                                val t0 = System.nanoTime()
-                                val w = analyzeJpegWhiteLike(latestJpeg)
-                                analyzeTotalMs += (System.nanoTime() - t0) / 1_000_000
-                                w
-                            }
                             val previewStats = previewStatsText(startedAt, now, chunks, bytesIn, framesIn, decoded, displayed, dropped, misses)
                             update {
                                 it.copy(
                                     streaming = true,
                                     streamStats = server.statusLine(),
                                     previewStats = previewStats,
-                                    whiteLike = whiteLike,
                                     previewJpeg = latestJpeg,
                                     previewVersion = it.previewVersion + 1,
                                     error = null,
@@ -277,7 +263,7 @@ class CameraSession(
                             encAvg, encodeMaxMs, encodeCount, encodeNulls, lastJpegBytes, yuyvAssembler.stats.line(),
                         )
                     } else {
-                        " | jpeg=%dB analyzeMs=%d".format(lastJpegBytes, analyzeTotalMs)
+                        " | jpeg=%dB".format(lastJpegBytes)
                     }
                     log(LogLevel.INFO, "[$deviceName] $previewStats / ${server.statusLine()}$diag")
                     lastStatsAt = now
@@ -285,7 +271,6 @@ class CameraSession(
                     encodeTotalMs = 0
                     encodeMaxMs = 0
                     encodeNulls = 0
-                    analyzeTotalMs = 0
                     yuyvAssembler?.resetStats()
                 }
             }
@@ -328,72 +313,6 @@ class CameraSession(
             }
         }
         return candidates.maxByOrNull { it.packetSize }
-    }
-
-    // --- 露出(白飛び)判定 --------------------------------------------------
-    /** MJPEG 用: JPEG をデコードして輝度サンプリングで whiteLike を判定する。失敗時は false。 */
-    private fun analyzeJpegWhiteLike(bytes: ByteArray): Boolean {
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return false
-        return try {
-            val stepX = (bitmap.width / 32).coerceAtLeast(1)
-            val stepY = (bitmap.height / 24).coerceAtLeast(1)
-            var count = 0
-            var sum = 0L
-            var min = 255
-            var max = 0
-            var y = 0
-            while (y < bitmap.height) {
-                var x = 0
-                while (x < bitmap.width) {
-                    val c = bitmap.getPixel(x, y)
-                    val r = (c shr 16) and 0xFF
-                    val g = (c shr 8) and 0xFF
-                    val b = c and 0xFF
-                    val luma = (r * 299 + g * 587 + b * 114) / 1000
-                    sum += luma.toLong()
-                    min = minOf(min, luma)
-                    max = maxOf(max, luma)
-                    count++
-                    x += stepX
-                }
-                y += stepY
-            }
-            whiteLikeFrom(sum, count, min, max)
-        } finally {
-            bitmap.recycle()
-        }
-    }
-
-    /** YUYV 用: 生 Y(YUY2 の偶数バイト) を直接サンプリングして whiteLike を判定する（デコード不要）。 */
-    private fun isYuyvWhiteLike(yuy2: ByteArray, width: Int, height: Int): Boolean {
-        if (width <= 0 || height <= 0 || yuy2.size < width * height * 2) return false
-        val rowBytes = width * 2
-        val stepX = (width / 32).coerceAtLeast(1)
-        val stepY = (height / 24).coerceAtLeast(1)
-        var count = 0
-        var sum = 0L
-        var min = 255
-        var max = 0
-        var y = 0
-        while (y < height) {
-            val rowStart = y * rowBytes
-            var x = 0
-            while (x < width) {
-                val luma = yuy2[rowStart + x * 2].toInt() and 0xFF  // 各ピクセル先頭が Y
-                sum += luma.toLong()
-                min = minOf(min, luma)
-                max = maxOf(max, luma)
-                count++
-                x += stepX
-            }
-            y += stepY
-        }
-        return whiteLikeFrom(sum, count, min, max)
-    }
-
-    private fun whiteLikeFrom(sum: Long, count: Int, min: Int, max: Int): Boolean {
-        val mean = if (count == 0) 0.0 else sum.toDouble() / count.toDouble()
-        return mean > 245.0 && min > 220 && (max - min) < 35
     }
 
     private fun previewStatsText(
